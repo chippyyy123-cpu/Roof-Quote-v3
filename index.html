@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roof Quote Alpha Build</title>
+<style>
+body { margin:0; font-family:Arial,sans-serif; background:#111; color:#fff; }
+#wizard { max-width:700px; margin:20px auto; padding:20px; background:#000; border-radius:14px; box-shadow:0 6px 20px rgba(0,0,0,0.4); }
+h2 { color:#FFD700; text-align:center; margin-top:0; }
+input, select, button { font-size:1rem; border-radius:8px; border:none; margin-top:10px; padding:12px; width:100%; }
+input, select { background:#111; color:white; }
+button { background:#FFD700; color:black; font-weight:bold; cursor:pointer; transition:all 0.3s; }
+button:hover { box-shadow:0 0 12px #FFD700; }
+#map { height:400px; width:100%; border-radius:12px; margin-top:10px; }
+.hidden { display:none; flex-direction:column; }
+#summary-step { text-align:center; margin-top:20px; }
+</style>
+</head>
+<body>
+
+<div id="wizard">
+
+  <!-- Step 1: Address -->
+  <div id="step1">
+    <h2>Step 1: Enter Your Address</h2>
+    <input id="rq-address" type="text" placeholder="123 Main St, City, Province">
+    <button id="to-step2">Next</button>
+  </div>
+
+  <!-- Step 2: Map + Polygon -->
+  <div id="step2" class="hidden">
+    <h2>Step 2: Draw Your Roof</h2>
+    <p style="color:#FFD700;">Draw a polygon around your roof on the satellite map.</p>
+    <div id="map"></div>
+    <button id="rq-clear-polygon" style="width:50%; margin-top:10px;">Clear Polygon</button>
+    <button id="to-step3" style="margin-top:10px;">Next</button>
+  </div>
+
+  <!-- Step 3: Pitch + Customer Info -->
+  <div id="step3" class="hidden">
+    <h2>Step 3: Roof Pitch & Info</h2>
+    <label>Roof Pitch:</label>
+    <select id="rq-pitch">
+      <option value="1">Flat</option>
+      <option value="1.05">Low Slope (+5%)</option>
+      <option value="1.2">Steep Slope (+20%)</option>
+    </select>
+
+    <label>Name:</label>
+    <input id="rq-name" type="text" placeholder="Your Name">
+    <label>Email:</label>
+    <input id="rq-email" type="email" placeholder="Email">
+    <label>Phone (optional):</label>
+    <input id="rq-phone" type="tel" placeholder="Phone">
+    <button id="get-quote">Get Quote</button>
+  </div>
+
+  <!-- Step 4: Summary -->
+  <div id="summary-step" class="hidden">
+    <h2>Your Roof Quote</h2>
+    <p id="rq-summary"></p>
+    <div id="rq-status" style="color:#FFD700;font-weight:bold;"></div>
+  </div>
+
+  <!-- Zapier hidden form -->
+  <form id="rq-zapier-form" action="https://hooks.zapier.com/hooks/catch/25543884/uk5fqbe/" method="POST" target="hidden-iframe" style="display:none;">
+    <input type="hidden" name="name" id="form-name">
+    <input type="hidden" name="email" id="form-email">
+    <input type="hidden" name="phone" id="form-phone">
+    <input type="hidden" name="address" id="form-address">
+    <input type="hidden" name="roofArea" id="form-roofArea">
+    <input type="hidden" name="totalCost" id="form-totalCost">
+    <input type="hidden" name="pitch" id="form-pitch">
+    <iframe name="hidden-iframe" style="display:none;"></iframe>
+  </form>
+
+</div>
+
+<script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=geometry,drawing"></script>
+<script>
+let map, drawingManager, roofPolygon, roofArea=0;
+const laborPerSquare=200, materialPerSquare=200, profitPct=0.10, shinglesPerSquare=3, bundleSqFt=33.3;
+
+function initMap(center){
+  map = new google.maps.Map(document.getElementById('map'), { center: center, zoom: 20, mapTypeId: 'satellite', tilt:0 });
+  drawingManager = new google.maps.drawing.DrawingManager({
+    drawingMode: google.maps.drawing.OverlayType.POLYGON,
+    drawingControl:true,
+    drawingControlOptions:{position:google.maps.ControlPosition.TOP_CENTER, drawingModes:['polygon']},
+    polygonOptions:{fillColor:'#FFD700', fillOpacity:0.3, strokeWeight:2, strokeColor:'#FFD700', editable:true, draggable:false}
+  });
+  drawingManager.setMap(map);
+
+  google.maps.event.addListener(drawingManager, 'polygoncomplete', function(polygon){
+    if(roofPolygon) roofPolygon.setMap(null);
+    roofPolygon = polygon;
+    roofArea = google.maps.geometry.spherical.computeArea(polygon.getPath());
+    google.maps.event.addListener(roofPolygon.getPath(), 'insert_at', updateArea);
+    google.maps.event.addListener(roofPolygon.getPath(), 'set_at', updateArea);
+  });
+}
+
+function updateArea(){ if(roofPolygon) roofArea = google.maps.geometry.spherical.computeArea(roofPolygon.getPath()); }
+
+// Step 1 → Step 2 with logging
+document.getElementById('to-step2').addEventListener('click', () => {
+  const addr = document.getElementById('rq-address').value.trim();
+  if (!addr) { alert('Please enter your address.'); return; }
+  console.log('Step 1: Address entered:', addr);
+
+  if (!google || !google.maps || !google.maps.Geocoder) {
+    alert('Google Maps API not loaded correctly.');
+    console.error('Google Maps API missing:', google);
+    return;
+  }
+
+  const geocoder = new google.maps.Geocoder();
+  geocoder.geocode({ address: addr }, (results, status) => {
+    console.log('Geocode status:', status, 'Results:', results);
+    if (status !== 'OK') { alert('Address not found. Please check.'); return; }
+    if (!results || !results[0] || !results[0].geometry) { alert('Geocode returned no results.'); return; }
+
+    document.getElementById('step1').classList.add('hidden');
+    document.getElementById('step2').classList.remove('hidden');
+
+    try {
+      initMap(results[0].geometry.location);
+      console.log('Map initialized at:', results[0].geometry.location);
+    } catch (e) { alert('Error initializing map. See console.'); console.error('initMap error:', e); }
+  });
+});
+
+document.getElementById('rq-clear-polygon').addEventListener('click',()=>{ if(roofPolygon){ roofPolygon.setMap(null); roofPolygon=null; roofArea=0; } });
+document.getElementById('to-step3').addEventListener('click',()=>{
+  if(!roofPolygon){ alert('Draw the roof first'); return; }
+  document.getElementById('step2').classList.add('hidden');
+  document.getElementById('step3').classList.remove('hidden');
+});
+
+document.getElementById('get-quote').addEventListener('click',()=>{
+  const name=document.getElementById('rq-name').value, email=document.getElementById('rq-email').value;
+  const phone=document.getElementById('rq-phone').value, address=document.getElementById('rq-address').value;
+  const pitchMultiplier=parseFloat(document.getElementById('rq-pitch').value), pitchText=document.getElementById('rq-pitch').selectedOptions[0].text;
+
+  if(!name||!email){ alert('Enter name and email'); return; }
+  if(!roofPolygon){ alert('Draw your roof first'); return; }
+
+  const adjustedRoofArea=(roofArea*10.7639)*pitchMultiplier;
+  const numSquares=Math.ceil(adjustedRoofArea/(shinglesPerSquare*bundleSqFt));
+  const totalCost=Math.round(numSquares*(laborPerSquare+materialPerSquare)*(1+profitPct));
+
+  document.getElementById('rq-summary').textContent=`Hi ${name}, your estimated roof area is approx ${adjustedRoofArea.toFixed(0)} sq ft. Estimated cost: $${totalCost.toLocaleString()}.`;
+  document.getElementById('summary-step').classList.remove('hidden');
+  document.getElementById('rq-status').textContent='Quote sent! Check your email.';
+
+  document.getElementById('form-name').value=name;
+  document.getElementById('form-email').value=email;
+  document.getElementById('form-phone').value=phone;
+  document.getElementById('form-address').value=address;
+  document.getElementById('form-roofArea').value=adjustedRoofArea.toFixed(0);
+  document.getElementById('form-totalCost').value=totalCost;
+  document.getElementById('form-pitch').value=pitchText;
+  document.getElementById('rq-zapier-form').submit();
+});
+</script>
+</body>
+</html>
